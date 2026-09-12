@@ -73,13 +73,20 @@ async function sendToTokens(docId, title, body) {
 
 exports.onPtLogDataWrite = onDocumentWritten("pt-log-data/{docId}", async (event) => {
   const docId = event.params.docId;
+  console.log(`[진단] 함수 진입 - docId: ${docId}`);
+
   const before = parseValue(event.data.before);
   const after = parseValue(event.data.after);
-  if (!after) return;
+  console.log(`[진단] before 파싱: ${before ? "성공" : "null"}, after 파싱: ${after ? "성공" : "null"}`);
+  if (!after) {
+    console.log("[진단] after가 null이라 종료");
+    return;
+  }
 
   if (docId === "pt-directory") {
     const beforeCount = before?.trainerNotifications?.length || 0;
     const afterList = after.trainerNotifications || [];
+    console.log(`[진단] pt-directory - 알림 전: ${beforeCount}, 후: ${afterList.length}`);
     if (afterList.length > beforeCount) {
       const newest = afterList[0];
       await sendToTokens("pt-push-trainer", "민수PTLOG", newest.text);
@@ -92,20 +99,31 @@ exports.onPtLogDataWrite = onDocumentWritten("pt-log-data/{docId}", async (event
     const memberPushDoc = `pt-push-member:${memberId}`;
     const beforeMsgs = before?.messages || [];
     const afterMsgs = after.messages || [];
+    console.log(`[진단] pt-member - memberId: ${memberId}, 메시지 전: ${beforeMsgs.length}, 후: ${afterMsgs.length}`);
+
     if (afterMsgs.length > beforeMsgs.length) {
       const last = afterMsgs[afterMsgs.length - 1];
+      console.log(`[진단] 새 메시지 감지 - from: ${last.from}, text: ${last.text}`);
       if (last.from === "member") {
         await sendToTokens("pt-push-trainer", "새 메시지", last.text);
       } else if (last.from === "trainer") {
         await sendToTokens(memberPushDoc, "트레이너 메시지", last.text);
+      } else {
+        console.log(`[진단] from 값이 member/trainer 둘 다 아님: ${last.from}`);
       }
+    } else {
+      console.log("[진단] 메시지 개수 증가 없음");
     }
 
     const beforeNotifs = before?.notifications?.length || 0;
     const afterNotifsList = after.notifications || [];
+    console.log(`[진단] 알림 전: ${beforeNotifs}, 후: ${afterNotifsList.length}`);
     if (afterNotifsList.length > beforeNotifs) {
       const newest = afterNotifsList[0];
       await sendToTokens(memberPushDoc, "민수PTLOG", newest.text);
     }
+    return;
   }
+
+  console.log(`[진단] pt-member:도 pt-directory도 아닌 문서 - 처리 안 함`);
 });
