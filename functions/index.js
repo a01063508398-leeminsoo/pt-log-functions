@@ -61,9 +61,9 @@ async function pruneEntries(docId, entries, responses) {
 }
 
 async function sendToTokens(docId, title, body) {
-  // FCM rejects a notification with an empty body ("messaging/invalid-payload"),
-  // and some feed entries arrive without usable text, so fall back to a generic
-  // line rather than losing the notification entirely.
+  // FCM rejects a notification with an empty body, and some feed entries
+  // arrive without usable text, so fall back to a generic line rather than
+  // losing the notification entirely.
   const safeTitle = (title && String(title).trim()) || "민수PTLOG";
   const safeBody = (body && String(body).trim()) || "새로운 소식이 있어요";
 
@@ -73,7 +73,11 @@ async function sendToTokens(docId, title, body) {
   try {
     const res = await messaging.sendEachForMulticast({
       tokens: entries.map((e) => e.token),
-      notification: { title: safeTitle, body: safeBody },
+      // Data-only on purpose. With a `notification` block the browser displays
+      // the alert itself AND the service worker's onBackgroundMessage fires and
+      // calls showNotification, so every push appeared twice. Sending data only
+      // leaves the service worker as the single place that displays anything.
+      data: { title: safeTitle, body: safeBody },
     });
     console.log(`발송 결과 - 성공: ${res.successCount}, 실패: ${res.failureCount}`);
     res.responses.forEach((r, i) => {
