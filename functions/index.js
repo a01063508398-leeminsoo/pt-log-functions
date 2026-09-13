@@ -19,9 +19,9 @@ function parseValue(snap) {
 }
 
 // Push tokens live in their own documents (pt-push-trainer /
-// pt-push-member:{id}) so that registering a token never races with the
-// frequent whole-document writes that messages, weight logs and diet logs
-// perform on pt-directory / pt-member:{id}.
+// pt-push-member:{id}) so registering a token never races with the frequent
+// whole-document writes that messages, weight logs and diet logs perform on
+// pt-directory / pt-member:{id}.
 //
 // Entries are { deviceId, token }. Older data may hold bare token strings, so
 // both shapes are normalised here.
@@ -68,7 +68,7 @@ async function sendToTokens(docId, title, body) {
   const safeBody = (body && String(body).trim()) || "새로운 소식이 있어요";
 
   const entries = await readEntries(docId);
-  console.log(`발송 시도 ${docId} - 기기 수: ${entries.length}`);
+  console.log(`발송 시도 ${docId} - 기기 수: ${entries.length} - 내용: ${safeBody}`);
   if (entries.length === 0) return;
   try {
     const res = await messaging.sendEachForMulticast({
@@ -85,16 +85,34 @@ async function sendToTokens(docId, title, body) {
   }
 }
 
-// Notification lists are capped with .slice(0, 200) on the client, so once the
-// cap is reached a new entry no longer changes the array length. Comparing the
-// newest entry's id instead keeps detection working at any list size.
-function newestIfAdded(beforeList, afterList) {
-  const after = afterList || [];
-  if (after.length === 0) return null;
-  const newest = after[0];
-  if (!newest || !newest.id) return null;
-  const beforeIds = new Set((beforeList || []).map((n) => n && n.id).filter(Boolean));
-  return beforeIds.has(newest.id) ? null : newest;
+// Detecting "something new was added" has to survive three things the client
+// does: notifications are prepended (newest first) while messages are appended
+// (newest last); the notification list is capped with .slice(0, 200) so at the
+// cap the length stops growing; and some entries may lack an id.
+//
+// Comparing id sets handles order and the cap correctly. When ids aren't
+// usable we fall back to a length check, taking the entry from whichever end
+// is newest for that list.
+function findNewEntries(beforeList, afterList, newestFirst) {
+  const before = Array.isArray(beforeList) ? beforeList : [];
+  const after = Array.isArray(afterList) ? afterList : [];
+  if (after.length === 0) return [];
+
+  const afterHasIds = after.every((n) => n && n.id);
+  const beforeHasIds = before.every((n) => n && n.id);
+
+  if (afterHasIds && beforeHasIds) {
+    const beforeIds = new Set(before.map((n) => n.id));
+    const added = after.filter((n) => !beforeIds.has(n.id));
+    if (added.length > 0) return added;
+    // Ids all matched: genuinely nothing new (e.g. a read-flag update).
+    return [];
+  }
+
+  if (after.length > before.length) {
+    return [newestFirst ? after[0] : after[after.length - 1]];
+  }
+  return [];
 }
 
 exports.onPtLogDataWrite = onDocumentWritten("pt-log-data/{docId}", async (event) => {
@@ -104,25 +122,36 @@ exports.onPtLogDataWrite = onDocumentWritten("pt-log-data/{docId}", async (event
   if (!after) return;
 
   // Trainer-facing activity feed. Every member action the trainer should hear
-  // about — including messages — lands here, so this is the single source of
-  // trainer pushes.
+  // about — messages, routines, weight, diet — lands here.
   if (docId === "pt-directory") {
-    const newest = newestIfAdded(before?.trainerNotifications, after.trainerNotifications);
-    if (newest) {
-      await sendToTokens("pt-push-trainer", "민수PTLOG", newest.text);
+    const added = findNewEntries(before?.trainerNotifications, after.trainerNotifications, true);
+    for (const n of added.slice(0, 3)) {
+      await sendToTokens("pt-push-trainer", "민수PTLOG", n.text);
     }
     return;
   }
 
-  // Member-facing notifications. The client writes a notifications entry for
-  // trainer messages as well as for comments and other activity, so pushing
-  // only from this list avoids the duplicate that came from also pushing on
-  // the messages array growing.
   if (docId.startsWith("pt-member:")) {
     const memberId = docId.slice("pt-member:".length);
-    const newest = newestIfAdded(before?.notifications, after.notifications);
-    if (newest) {
-      await sendToTokens(`pt-push-member:${memberId}`, "민수PTLOG", newest.text);
+    const pushDoc = `pt-push-member:${memberId}`;
+
+    // Member-facing notifications cover trainer messages as well as comments
+    // and other trainer activity, so this is the primary source.
+    const addedNotifs = findNewEntries(before?.notifications, after.notifications, true);
+    for (const n of addedNotifs.slice(0, 3)) {
+      await sendToTokens(pushDoc, "민수PTLOG", n.text);
+    }
+
+    // Safety net: if a trainer message somehow lands without a matching
+    // notification entry, push it from the messages array instead. Skipping
+    // this when a notification was already sent is what prevents the duplicate
+    // "트레이너 메시지" + "민수PTLOG" pair users were seeing.
+    if (addedNotifs.length === 0) {
+      const addedMsgs = findNewEntries(before?.messages, after.messages, false);
+      const lastTrainerMsg = addedMsgs.filter((m) => m && m.from === "trainer").pop();
+      if (lastTrainerMsg) {
+        await sendToTokens(pushDoc, "민수PTLOG", `트레이너가 메시지를 보냈어요: "${lastTrainerMsg.text}"`);
+      }
     }
   }
 });
