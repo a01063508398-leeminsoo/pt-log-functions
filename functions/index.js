@@ -61,13 +61,19 @@ async function pruneEntries(docId, entries, responses) {
 }
 
 async function sendToTokens(docId, title, body) {
+  // FCM rejects a notification with an empty body ("messaging/invalid-payload"),
+  // and some feed entries arrive without usable text, so fall back to a generic
+  // line rather than losing the notification entirely.
+  const safeTitle = (title && String(title).trim()) || "민수PTLOG";
+  const safeBody = (body && String(body).trim()) || "새로운 소식이 있어요";
+
   const entries = await readEntries(docId);
   console.log(`발송 시도 ${docId} - 기기 수: ${entries.length}`);
   if (entries.length === 0) return;
   try {
     const res = await messaging.sendEachForMulticast({
       tokens: entries.map((e) => e.token),
-      notification: { title, body },
+      notification: { title: safeTitle, body: safeBody },
     });
     console.log(`발송 결과 - 성공: ${res.successCount}, 실패: ${res.failureCount}`);
     res.responses.forEach((r, i) => {
